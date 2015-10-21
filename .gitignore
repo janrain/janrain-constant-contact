@@ -2,6 +2,7 @@
 *.pyc
 *.zip
 *.log
+venv
 
 # Elastic Beanstalk Files
 .elasticbeanstalk/*
