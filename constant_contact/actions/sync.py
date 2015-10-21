@@ -3,7 +3,6 @@ from flask import current_app as app
 import boto3
 import janrain_datalib
 import json
-import multiprocessing as mp
 import sys
 import datetime
 import collections
