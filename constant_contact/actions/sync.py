@@ -126,7 +126,7 @@ def init_aws(sync_info):
     sync_info['sdb_domain_name'] = sdb_domain_name
     try:        
         sdb = boto3.client('sdb', region_name=app.config['AWS_REGION'])
-        sdb.create_domain(DomainName=sdb_domain_name)
+        # sdb.create_domain(DomainName=sdb_domain_name)
         sync_info['sdb'] = sdb
     except Exception as e:
         #specific exceptions
