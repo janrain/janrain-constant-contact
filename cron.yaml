@@ -1,5 +1,5 @@
 version: 1
 cron:
- — name: "sync"
-   url: "/sync"
-   schedule: "*/15 * * * *"
+— name: "sync"
+  url: "/sync"
+  schedule: "*/15 * * * *"
