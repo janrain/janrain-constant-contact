@@ -193,25 +193,25 @@ class ConstantContactClient(object):
 		if string == None:
 			return ''
 		else:
-			return string[:2]
+			return str(string)[:2]
 
 	def transform_string4(self,string):
 		if string == None:
 			return ''
 		else:
-			return string[:4]
+			return str(string)[:4]
 
 	def transform_string25(self,string):
 		if string == None:
 			return ''
 		else:
-			return string[:25]
+			return str(string)[:25]
 
 	def transform_string50(self,string):
 		if string == None:
 			return ''
 		else:
-			return string[:50]
+			return str(string)[:50]
 
 	def transform_addresses(self,address_values):
 		if len(address_values) > 2:
