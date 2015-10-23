@@ -1,0 +1,25 @@
+# refer to application documentation
+export DEBUG=true
+export APP_LOG_FILE=./application.log
+export APP_LOG_FILESIZE=
+export APP_LOG_NUM_BACKUPS=
+export APP_QUEUE_MIN_RETRIES=
+export APP_QUEUE_MAX_RETRIES=
+export APP_QUEUE_RETRY_DELAY=
+
+export JANRAIN_URI=
+export JANRAIN_CLIENT_ID=
+export JANRAIN_CLIENT_SECRET=
+export JANRAIN_SCHEMA_NAME=
+export JANRAIN_BATCH_SIZE=
+export JANRAIN_CCID_ATTR_NAME=
+export JANRAIN_CC_ATTRIBUTE_MAPPING=
+export JANRAIN_CC_CUSTOM_FIELD_MAPPING=
+export AWS_SQS_QUEUE_NAME=
+export AWS_REGION=
+export AWS_SDB_DOMAIN_NAME=d
+export AWS_SDB_ITEM_NAME
+
+export CC_API_KEY=
+export CC_ACCESS_TOKEN=
+export CC_LIST_IDS=
