@@ -96,9 +96,6 @@ def init_sync():
                                             ItemName=sync_info['sdb_item_name'],
                                             AttributeNames=[SDB_SYNC_IN_PROCESS_NAME,SDB_LAST_RUN_TIME_NAME],
                                             ConsistentRead=True)
-
-    print(sync_info)
-    print(response)
     if 'Attributes' in response:   
         for attribute in response['Attributes']:
             if attribute['Name'] == SDB_SYNC_IN_PROCESS_NAME:
