@@ -15,6 +15,13 @@ SDB_SYNC_IN_PROCESS_TRUE = 'true'
 SDB_SYNC_IN_PROCESS_FALSE = 'false'
 SDB_LAST_RUN_TIME_NAME = 'last_run_time'
 
+class MaxRetriesError(Exception):
+    """Thrown if max retries hit when calling constant contact"""
+    def __init__(self, call_info):
+        self.call_info = call_info
+    def __str__(self):
+        return 'max retries exceeded for call: ' + call_info
+
 def sync():
     """The main sync method. 
         Spin up the queue_reader_process to process records from the An event 
@@ -89,6 +96,9 @@ def init_sync():
                                             ItemName=sync_info['sdb_item_name'],
                                             AttributeNames=[SDB_SYNC_IN_PROCESS_NAME,SDB_LAST_RUN_TIME_NAME],
                                             ConsistentRead=True)
+
+    print(sync_info)
+    print(response)
     if 'Attributes' in response:   
         for attribute in response['Attributes']:
             if attribute['Name'] == SDB_SYNC_IN_PROCESS_NAME:
@@ -126,6 +136,7 @@ def init_aws(sync_info):
     sync_info['sdb_domain_name'] = sdb_domain_name
     try:        
         sdb = boto3.client('sdb', region_name=app.config['AWS_REGION'])
+        # sdb.delete_domain(DomainName=sdb_domain_name)
         sdb.create_domain(DomainName=sdb_domain_name)
         sync_info['sdb'] = sdb
     except Exception as e:
@@ -324,34 +335,35 @@ def process_message(message,sync_info):
     app.logger.info(log_tag + " processing message")
     ccid_name = sync_info['janrain_ccid_name']
     cc_client = sync_info['cc_client']
-
+    cc_contact = None
     #app.logger.info(janrain_user_info)
     try:
-        cc_contact = cc_client.get_contact_by_email(email)
+        cc_contact = get_by_email_or_id(sync_info,log_tag,email)
         if cc_contact is None:
             app.logger.info(log_tag + " contact not found by email")
             if janrain_user_info[ccid_name] is None:
                 app.logger.info(log_tag + " no info in " + ccid_name + ' creating new contact')
                 """we have a new account or must treat as if we do"""
-                create_contact(sync_info, janrain_user_info, log_tag)
+                create_or_update(sync_info, janrain_user_info, cc_contact, log_tag)
                 app.logger.info(log_tag + " contact created")
             else:   
                 """email address may have changed"""
-                cc_contact = cc_client.get_contact_by_id(janrain_user_info[ccid_name])
+                cc_contact = get_by_email_or_id(sync_info,log_tag,
+                                            janrain_user_info[ccid_name],email_id=False)
                 if cc_contact is None:
                     app.logger.info(log_tag + " contact not found by id, creating new contact")
                     """contactid is stale and we must create new account"""
-                    create_contact(sync_info, janrain_user_info, log_tag)
+                    create_or_update(sync_info, janrain_user_info, cc_contact, log_tag)
                 else:
                     app.logger.info(log_tag + " contact found by id, syncing")
                     """email has changed"""
-                    update_contact(sync_info, janrain_user_info, cc_contact, log_tag)
+                    create_or_update(sync_info, janrain_user_info, cc_contact, log_tag)
                     app.logger.info(log_tag + " contact synced")
 
         else:
             app.logger.info(log_tag + " contact found by email, syncing")
             """email has changed"""
-            update_contact(sync_info, janrain_user_info, cc_contact, log_tag)
+            create_or_update(sync_info, janrain_user_info, cc_contact, log_tag)
             app.logger.info(log_tag + " contact synced")
         return True
     except constant_contact_client.ConstantConctactServerError as e:
@@ -360,8 +372,43 @@ def process_message(message,sync_info):
         return False
     except Exception as e:
         app.logger.exception('')
-        #alert?
         return True
+
+def get_by_email_or_id(sync_info,indentifier,tag,email_id=True):
+    """defaut is to search by email, set email_id to false to search by cc id
+        if rate limit errors recieved will retry up to the configed max before
+        failing over"""
+    tries = 0
+    contact = -1
+    while tries < app.config['APP_CC_CALL_MAX_RETRIES']:
+        if email_id:
+            contact = sync_info.cc_client.get_contact_by_email(indentifier)
+        else:
+            contact = sync_info.cc_client.get_contact_by_id(indentifier)
+        if contact_id != -1:
+            return contact
+        tries += 1
+        sleep(tries * app.config['APP_CC_CALL_RETRY_SLEEP_FACTOR'])
+    raise MaxRetriesError('get by email or id for: ' + tag)
+
+def create_or_update(sync_info,janrain_user_info,cc_contact,tag):
+    """if contact passes is empty will route to create otherwise updates
+       if rate limit errors recieved will retry up to the configed max before
+        failing over """
+    tries = 0
+    MAX_TRIES = 3
+    RETRY_SLEEP = 1
+    contact_id = -1
+    while tries < app.config['APP_CC_CALL_MAX_RETRIES']:
+        if cc_contact is None:
+            contact_id = create_contact(sync_info,janrain_user_info,tag)
+        else:
+            contact_id = update_contact(sync_info,janrain_user_info,cc_contact,tag)
+        if contact_id  > -1:
+            break;
+        tries += 1
+        sleep(tries * app.config['APP_CC_CALL_RETRY_SLEEP_FACTOR'])
+    raise MaxRetriesError('create or update for: ' + tag)
 
 def update_contact(sync_info,janrain_user_info,cc_contact,tag):
     """makes put call to contact id to update contact in cc and 
@@ -394,7 +441,7 @@ def create_contact(sync_info,janrain_user_info,tag):
 
 def repack_user(sync_info,janrain_user_info):
     """takes standard janrain user object and flattens it.
-        map and removes individual custom fields top a custom fields object
+        map and removes individual custom fields to a custom fields object
         removes uuid and ccid"""
     user_info = flatten(janrain_user_info)
     custom_field_map = sync_info['custom_field_map']
