@@ -382,7 +382,7 @@ def get_by_email_or_id(sync_info,indentifier,tag,email_id=True):
             contact = sync_info['cc_client'].get_contact_by_email(indentifier)
         else:
             contact = sync_info['cc_client'].get_contact_by_id(indentifier)
-        if contact_id != -1:
+        if contact != -1:
             return contact
         tries += 1
         sleep(tries * app.config['APP_CC_CALL_RETRY_SLEEP_FACTOR'])
