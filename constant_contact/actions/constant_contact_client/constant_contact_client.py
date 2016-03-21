@@ -38,28 +38,27 @@ class ConstantContactClient(object):
 			raise ConstantConstactInvalidMethodCallError("No email provided to GET contact")
 		params = self.get_params()
 		params['email'] = email
-		# params['status'] = 'ACTIVE'
 		response = requests.get(baseurl+contactspath,params=params,headers=self.get_header())
 		if response.status_code == requests.codes['OK']:
 			contacts = response.json()['results']
 			if len(contacts) == 0:
-				return None
+				return {'status': 404, 'contact': None}
 			elif len(contacts) == 1:
 				"""if the data is clean we should only get 1 email in the list"""
-				return contacts[0]
+				return {'status': 200, 'contact': contacts[0]}
 			else:
 				"""this case shouldn't happen but IS in the Tone It Up data. Advice from CC is to 
 				ignore the email with an id of 0 and use the other"""
 				if contacts[0]['id']==0:
-					return contacts[1]
+					return {'status': 200, 'contact': contacts[1]}
 				else:
-					return contacts[0] 
+					return {'status': 200, 'contact': contacts[0]}
 		elif response.status_code == 403:
 			"""rate limit"""
-			return -1
+			return {'status': 403, 'contact': None}
 		elif response.status_code == 404:
 			"""contact not found"""
-			return None
+			return {'status': 404, 'contact': None}
 		elif response.status_code == 500:
 			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
@@ -71,13 +70,13 @@ class ConstantContactClient(object):
 		params = self.get_params()		
 		response = requests.get(baseurl+contactspath+'/'+ccid,params=params,headers=self.get_header())
 		if response.status_code == requests.codes['OK']:
-			response.json()
+			return {'status': 200, 'contact' :response.json()}
 		elif response.status_code == 403:
 			"""rate limit"""
-			return -1
+			return {'status': 403, 'contact': None}
 		elif response.status_code == 404:
 			"""contact not found"""
-			return None
+			return {'status': 404, 'contact':None}
 		elif response.status_code == 500:
 			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
@@ -91,10 +90,10 @@ class ConstantContactClient(object):
 		response = requests.put(baseurl+contactspath+'/'+contact['id'],params=params,
 			                    headers=self.get_header(),data=json.dumps(contact))
 		if response.status_code == requests.codes['OK']:
-			return response.json()['id']
+			return {'status': 200, 'contact_id' : response.json()['id'] }
 		elif response.status_code == 403:
 			"""rate limit"""
-			return -1
+			return {'status': 403, 'contact': None}
 		elif response.status_code == 500:
 			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
@@ -109,10 +108,10 @@ class ConstantContactClient(object):
 			                     data=json.dumps(contact))
 		code = response.status_code 
 		if response.status_code == requests.codes['OK']:
-			return response.json()['id']
+			return {'status': 200, 'contact_id' : response.json()['id'] }
 		elif response.status_code == 403:
 			"""rate limit"""
-			return -1
+			return {'status': 403, 'contact': None}
 		elif response.status_code == 500:
 			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
