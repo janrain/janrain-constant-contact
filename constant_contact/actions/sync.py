@@ -4,9 +4,9 @@ import boto3
 import janrain_datalib
 import json
 import sys
-import datetime
 import collections
 import traceback
+import datetime
 from time import sleep
 from .constant_contact_client import *
 
@@ -14,6 +14,13 @@ SDB_SYNC_IN_PROCESS_NAME = 'sync_in_process'
 SDB_SYNC_IN_PROCESS_TRUE = 'true'
 SDB_SYNC_IN_PROCESS_FALSE = 'false'
 SDB_LAST_RUN_TIME_NAME = 'last_run_time'
+
+class MaxRetriesError(Exception):
+    """Thrown if max retries hit when calling constant contact"""
+    def __init__(self, call_info):
+        self.call_info = call_info
+    def __str__(self):
+        return 'max retries exceeded for call: ' + call_info
 
 def sync():
     """The main sync method. 
@@ -45,15 +52,13 @@ def sync():
             load_records(sync_info)
         else:
             raise
-
-    """messages will be retried if failed for retriable reason""" 
-    process_queue(sync_info,True)
-
-    """set the time of the completed run"""
-    sdb_attributes = [{'Name':SDB_LAST_RUN_TIME_NAME,'Value':str(sync_info['now']),'Replace':True},
-                      {'Name':SDB_SYNC_IN_PROCESS_NAME,'Value':SDB_SYNC_IN_PROCESS_FALSE,'Replace':True},]
-    sync_info['sdb'].put_attributes(DomainName=sync_info['sdb_domain_name'],
-                                 ItemName=sync_info['sdb_item_name'],Attributes=sdb_attributes)
+        
+    try:
+        process_queue(sync_info,True)
+    finally:
+        sync_info['job_table'].update_item(Key={'job_id':'sync_job'},
+                                UpdateExpression='SET running = :val1',
+                                ExpressionAttributeValues={':val1': False})
 
     return "done"
 
@@ -76,7 +81,6 @@ def init_sync():
         last_run_time
     """
     sync_info = {}
-    sync_info['now'] = datetime.datetime.utcnow()
 
     sync_info = init_aws(sync_info)
     if not sync_info:
@@ -85,24 +89,23 @@ def init_sync():
     """check for info from last run. if there is a run in progress still aborting
         if there is no info to be found set the lock and set last_run_time to now - 15minutes
         """
-    response = sync_info['sdb'].get_attributes(DomainName=sync_info['sdb_domain_name'],
-                                            ItemName=sync_info['sdb_item_name'],
-                                            AttributeNames=[SDB_SYNC_IN_PROCESS_NAME,SDB_LAST_RUN_TIME_NAME],
-                                            ConsistentRead=True)
-    if 'Attributes' in response:   
-        for attribute in response['Attributes']:
-            if attribute['Name'] == SDB_SYNC_IN_PROCESS_NAME:
-                if attribute['Value'] == SDB_SYNC_IN_PROCESS_TRUE:
-                    return log_and_return_warning("aborting: sync is already in process")
-            if attribute['Name'] == SDB_LAST_RUN_TIME_NAME:
-                sync_info['last_run_time'] = attribute['Value']
-
-    if 'last_run_time' not in sync_info:
-        sync_info['last_run_time'] = sync_info['now'] - datetime.timedelta(minutes=15)
-
-    sdb_attributes = [{'Name':SDB_SYNC_IN_PROCESS_NAME,'Value':SDB_SYNC_IN_PROCESS_TRUE,'Replace':True}]
-    sync_info['sdb'].put_attributes(DomainName=sync_info['sdb_domain_name'],
-                                 ItemName=sync_info['sdb_item_name'],Attributes=sdb_attributes) 
+    job_table = sync_info['job_table']
+    response = job_table.get_item(Key={'job_id':'sync_job'})
+    try: 
+        job = response['Item']
+        if job['running']:
+            return log_and_return_warning("aborting: sync is already in process")
+        last_run = job['run_start']
+        job_table.update_item(Key={'job_id':'sync_job'},
+                                UpdateExpression='SET running = :val1, run_start = :val2',
+                                ExpressionAttributeValues={':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
+    except KeyError:
+        job_table.put_item(Item={'job_id':'sync_job','running':True,
+                                                    'run_start': datetime.datetime.utcnow().__str__()})
+        last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=app.config['APP_DEFAULT_UPDATE_DELTA_HOURS'])).__str__()
+        pass
+    sync_info['job_table'] = job_table
+    sync_info['last_run'] = last_run
 
     sync_info = init_janrain(sync_info)
     if not sync_info:
@@ -117,32 +120,63 @@ def init_sync():
 def init_aws(sync_info):
     app.logger.debug("intializing aws sqs and sdb")
 
-    aws_region = app.config['AWS_REGION']
-    if not aws_region:
-        return log_and_return_warning("aborting: AWS_REGION is not configured") 
-    sdb_domain_name = app.config['AWS_SDB_DOMAIN_NAME']
-    if not sdb_domain_name:
-        return log_and_return_warning("aborting: AWS_SDB_DOMAIN_NAME is not configured") 
-    sync_info['sdb_domain_name'] = sdb_domain_name
-    try:        
-        sdb = boto3.client('sdb', region_name=app.config['AWS_REGION'])
-        sdb.create_domain(DomainName=sdb_domain_name)
-        sync_info['sdb'] = sdb
-    except Exception as e:
-        #specific exceptions
-        log_and_return_warning("unable to connect to sdb: error detected: " + 
-                                str(traceback.format_exception(*sys.exc_info())))
+    dynamo_resource = boto3.resource('dynamodb')
+    dynamo_client   = boto3.client('dynamodb')
+
+    job_table = "constant_contact_job"
     
-    sdb_item_name = app.config['AWS_SDB_ITEM_NAME']
-    if not sdb_item_name:
-        return log_and_return_warning("aborting: AWS_SDB_ITEM_NAME is not configured") 
-    sync_info['sdb_item_name'] = sdb_item_name
+    try:
+        dynamo_client.describe_table(TableName=job_table)
+
+    except Exception as e:  
+        if "Requested resource not found: Table" in str(e):
+            # app.info.logger(job_table + " does not exist, creating")
+
+            table = dynamo_resource.create_table(
+                TableName            =job_table,
+                KeySchema            =[{'AttributeName': 'job_id'   ,'KeyType': 'HASH' }
+                                    ],
+                AttributeDefinitions =[{'AttributeName': 'job_id','AttributeType': 'S' }
+                                    ],
+                ProvisionedThroughput={'ReadCapacityUnits': 5,'WriteCapacityUnits': 5}
+            )
+
+            #wait for contirmation that the table exists
+            table.meta.client.get_waiter('table_exists').wait(TableName=job_table)
+        else:
+            log_and_return_warning("unable to create " + job_table)
+
+    index_table = 'constant_contact_index'
+
+    try:
+        dynamo_client.describe_table(TableName=index_table)
+
+    except Exception as e:  
+        if "Requested resource not found: Table" in str(e):
+            # app.info.logger(index_table + " does not exist, creating")
+
+            table = dynamo_resource.create_table(
+                TableName            =index_table,
+                KeySchema            =[{'AttributeName': 'uuid'   ,'KeyType': 'HASH' }
+                                    ],
+                AttributeDefinitions =[{'AttributeName': 'uuid','AttributeType': 'S' }
+                                    ],
+                ProvisionedThroughput={'ReadCapacityUnits': 5,'WriteCapacityUnits': 5}
+            )
+
+            #wait for contirmation that the table exists
+            table.meta.client.get_waiter('table_exists').wait(TableName=index_table)
+        else:
+            log_and_return_warning("unable to create " + index_table)
+    
+    sync_info['job_table'] = dynamo_resource.Table(job_table)
+    sync_info['index_table'] = dynamo_resource.Table(index_table)
 
     aws_sqs_queue_name = app.config['AWS_SQS_QUEUE_NAME']
     if not aws_sqs_queue_name:
         return log_and_return_warning("aborting: AWS_SQS_QUEUE_NAME is not configured")
     try: 
-        sqs = boto3.resource('sqs', region_name=app.config['AWS_REGION'])
+        sqs = boto3.resource('sqs')
         sync_info['queue'] = sqs.create_queue(QueueName=app.config['AWS_SQS_QUEUE_NAME'])
     except Exception as e:
         #specific exceptions
@@ -198,15 +232,6 @@ def init_janrain(sync_info):
         pass
     janrain_attributes.append('uuid')
     
-    """default is 'constantContactId""" 
-    janrain_ccid_name = app.config['JANRAIN_CCID_ATTR_NAME']
-    try:
-        janrain_attributes.remove(janrain_ccid_name)
-    except ValueError:
-        pass
-    sync_info['janrain_ccid_name'] = janrain_ccid_name
-    ##todo check if in schema
-    janrain_attributes.append(janrain_ccid_name)
     sync_info['janrain_attributes'] = janrain_attributes
 
     app.logger.debug("janrain complete")
@@ -278,8 +303,8 @@ def eval_mapping(mapping_string,attribute_name):
 def record_filter(sync_info):
     """Return the filter to use when fetching records from capture."""
     
-    filter_string = "lastUpdated > '" + str(sync_info['last_run_time']) + "'"
-    app.logger.info("app was last ran at: " + str(sync_info['last_run_time']) + " configuring filters")
+    filter_string = "lastUpdated > '" + str(sync_info['last_run']) + "'"
+    app.logger.info("app was last ran at: " + str(sync_info['last_run']) + " configuring filters")
 
     return filter_string
 
@@ -301,100 +326,130 @@ def process_queue(sync_info,retry):
             retries += 1
             if retries > min_retries:
                 app.logger.info('found empty queue ' + str(min_retries) + ' times, stopping process')
-                break
+                return True
             sleep(app.config['APP_QUEUE_RETRY_DELAY'])
             app.logger.info("returned: 0 messages from queue, retry: " + str(retries))
         else:
             retries = 0
             app.logger.info("returned: " + str(len(messages))+ " messages from queue")
             for m in messages:
-                if process_message(m,sync_info) or not retry:
-                    m.delete()
-        
+                success = process_message(m,sync_info) 
+                if success == -1 and retry == true:
+                    app.logger.info("leaving message in queue for next run")
+                    return True
+                elif success == 1:
+                    app.logger.debug("message complete, deleting")
+                else:
+                    app.logger.info("message unable to be processed, no retry deleting") 
+                m.delete()    
 
 def process_message(message,sync_info):
     """process a message from the queue. contains the main business logic of how an update is made"""
-    janrain_user_info = json.loads(message.body)
-    email = janrain_user_info['email']
-    if email is None:
-        app.logger.info("Skipping record with no email: " + janrain_user_info['uuid'])
-        return
-    log_tag = email + ':' + janrain_user_info['uuid'] + ':'
+    try:    
+        janrain_user_info = json.loads(message.body)
+        email = janrain_user_info['email']
+        uuid = janrain_user_info['uuid']
+        index_table = sync_info['index_table']
+        if email is None:
+            app.logger.info("Skipping record with no email: " + uuid)
+            return 0
+        log_tag = email + ':' + uuid + ':'
 
-    app.logger.info(log_tag + " processing message")
-    ccid_name = sync_info['janrain_ccid_name']
-    cc_client = sync_info['cc_client']
+        app.logger.info(log_tag + " processing message")
+        cc_client = sync_info['cc_client']
+        cc_contact = None
 
-    #app.logger.info(janrain_user_info)
-    try:
-        cc_contact = cc_client.get_contact_by_email(email)
-        if cc_contact is None:
-            app.logger.info(log_tag + " contact not found by email")
-            if janrain_user_info[ccid_name] is None:
-                app.logger.info(log_tag + " no info in " + ccid_name + ' creating new contact')
-                """we have a new account or must treat as if we do"""
-                create_contact(sync_info, janrain_user_info, log_tag)
-                app.logger.info(log_tag + " contact created")
-            else:   
-                """email address may have changed"""
-                cc_contact = cc_client.get_contact_by_id(janrain_user_info[ccid_name])
-                if cc_contact is None:
-                    app.logger.info(log_tag + " contact not found by id, creating new contact")
-                    """contactid is stale and we must create new account"""
-                    create_contact(sync_info, janrain_user_info, log_tag)
-                else:
-                    app.logger.info(log_tag + " contact found by id, syncing")
-                    """email has changed"""
-                    update_contact(sync_info, janrain_user_info, cc_contact, log_tag)
-                    app.logger.info(log_tag + " contact synced")
-
+        response = index_table.get_item(Key={'uuid':uuid})
+        try: 
+            item = response['Item']
+            stored_ccid = item['ccid']
+        except KeyError:
+            stored_ccid = None
+        """attempts to retrieve a contact from cc first by email then by id (if passed), returns
+           a contact if found otherwise returns None"""
+        cc_contact = get_by_email_or_id(sync_info,log_tag,email,stored_ccid)
+        """pass contact dictionary (or empty placeholder) to be sent to cc as update or create
+           returns the ccid of the contact"""
+        ccid = create_or_update(sync_info, janrain_user_info, log_tag, cc_contact)
+        if ccid != stored_ccid:
+            """update dynamo if ccid is out of sync"""
+            app.logger.info(log_tag + 'id out of sync in dynamo, updating')
+            index_table.update_item(Key={'uuid':uuid},
+                                UpdateExpression='SET ccid = :val1',
+                                ExpressionAttributeValues={':val1': ccid})  
+            return 1        
         else:
-            app.logger.info(log_tag + " contact found by email, syncing")
-            """email has changed"""
-            update_contact(sync_info, janrain_user_info, cc_contact, log_tag)
-            app.logger.info(log_tag + " contact synced")
-        return True
+            app.logger.info("contact id already synced")
+            return 1
     except constant_contact_client.ConstantConctactServerError as e:
         app.logger.info(log_tag + e.message)
         """retry""" 
-        return False
+        return -1
     except Exception as e:
         app.logger.exception('')
-        #alert?
-        return True
+        return 0
 
-def update_contact(sync_info,janrain_user_info,cc_contact,tag):
-    """makes put call to contact id to update contact in cc and 
-        updates ccid in janrain if out of sync"""
-    cc_client = sync_info['cc_client']
-    new_contact = cc_client.transform_contact(repack_user(sync_info,janrain_user_info),sync_info['janrain_attribute_map'])
-    for attr in new_contact:
-        cc_contact[attr] = new_contact[attr]
-    ccid = cc_client.put_contact(cc_contact)
-    app.logger.debug(tag + ' updated ' + ccid + ' in cc')
-    if ccid != janrain_user_info[sync_info['janrain_ccid_name']]:
-        """update janrain user if ccid is out of sync"""
-        app.logger.info(tag + 'id out of sync in janrian, updating')
-        sync_info['capture_schema'].records.get_record(janrain_user_info['uuid']).update({sync_info['janrain_ccid_name']: ccid}) 
+def get_by_email_or_id(sync_info,tag,email,cc_id=None):
+    """will search for contact by eamil first then by cc_id if it is provided.
+        if rate limites errors recieved will retry up to the configed max before
+        failing over"""
+    tries = 0
+    tried_email = False
+    while tries < app.config['CC_MAX_RETRIES']:
+        if not tried_email:
+            response = sync_info['cc_client'].get_contact_by_email(email)
+            if response['status'] == 404:
+                tried_email = True
+        elif cc_id:
+            response = sync_info['cc_client'].get_contact_by_id(cc_id)
+            if response['status'] == 404:
+                app.logger.info(tag + " no contact found, creating")
+                return None
+        else:
+            app.logger.info(tag + " no contact found, creating")
+            return None
+        if response['status'] == 200:
+            app.logger.info(tag + " contact found, syncing")
+            return response['contact']
+        tries += 1
+        sleep(tries * app.config['CC_RETRY_TIMEOUT'])
+    raise MaxRetriesError('get by email or id for: ' + tag)
 
-def create_contact(sync_info,janrain_user_info,tag):  
-    """makes post call to create contact in cc and 
-        updates ccid in janrain."""  
-    cc_client = sync_info['cc_client']
-    cc_contact = {}
-    """add the configured list(s) to the user object and a copy of our attribute mapping"""
-    user = repack_user(sync_info,janrain_user_info)
-    user['lists'] = sync_info['cc_list_ids']
-    mapping = sync_info['janrain_attribute_map'].copy()
-    mapping['lists'] = 'lists'
-    cc_contact = cc_client.transform_contact(user,mapping)
-    ccid = cc_client.post_contact(cc_contact)
-    app.logger.debug(tag + ' created ' + ccid + ' in cc updating janain')
-    sync_info['capture_schema'].records.get_record(janrain_user_info['uuid']).update({sync_info['janrain_ccid_name']: ccid}) 
+def create_or_update(sync_info,janrain_user_info,tag,cc_contact=None):
+    """if contact passed is empty will route to create otherwise updates
+       if rate limit errors recieved will retry up to the configed max before
+        failing over """
+    tries = 0
+    while tries < app.config['CC_MAX_RETRIES']:
+        cc_client = sync_info['cc_client']
+        mapping = sync_info['janrain_attribute_map'].copy()
+        user = repack_user(sync_info,janrain_user_info)
+        response = {}
+        if cc_contact is None:
+            cc_contact = {}
+            """add the configured list(s) to the user object and a copy of our attribute mapping"""
+            user['lists'] = sync_info['cc_list_ids']
+            mapping['lists'] = 'lists'
+            cc_contact = cc_client.transform_contact(user,mapping)
+            response = cc_client.post_contact(cc_contact)
+            operation = 'created'
+        else:
+            new_contact = cc_client.transform_contact(user,mapping)
+            for attr in new_contact:
+                cc_contact[attr] = new_contact[attr]
+            response = cc_client.put_contact(cc_contact)  
+            operation = 'updated'  
+        if response['status'] == 200:
+            ccid = response['contact_id']
+            app.logger.debug(tag + operation + ': ' + ccid)
+            return ccid     
+        tries += 1
+        sleep(tries * app.config['CC_RETRY_TIMEOUT'])
+    raise MaxRetriesError('create or update for: ' + tag)
 
 def repack_user(sync_info,janrain_user_info):
     """takes standard janrain user object and flattens it.
-        map and removes individual custom fields top a custom fields object
+        map and removes individual custom fields to a custom fields object
         removes uuid and ccid"""
     user_info = flatten(janrain_user_info)
     custom_field_map = sync_info['custom_field_map']
@@ -406,7 +461,6 @@ def repack_user(sync_info,janrain_user_info):
                 user_info.pop(mapping,None)
         user_info['custom_fields'] = custom_fields
     user_info.pop('uuid',None)
-    user_info.pop(sync_info['janrain_ccid_name'],None)
     return user_info
 
 def flatten(d, parent_key='', sep='.'):

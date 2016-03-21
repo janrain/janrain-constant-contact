@@ -12,34 +12,6 @@ class ConstantContactError(Exception):
     	self.message = message
     	self.code = code
 
-class ConstantConctactAuthError(ConstantContactError):
-    """Authentication error."""
-    pass
-
-class ConstantConctactHeaderError(ConstantContactError):
-    """Authentication error."""
-    pass
-
-class ConstantConctactDataError(ConstantContactError):
-    """Data format or validation error."""
-    pass
-
-class ConstantConctactServerError(ConstantContactError):
-    """Server error."""
-    pass
-
-class ConstantConstactNotFoundError(ConstantContactError):
-    """Result not found."""
-    pass
-
-class ConstantConstactEmailInUseError(ConstantContactError):
-    """Email already in use."""
-    pass
-
-class ConstantConstactUnkownResponseCodeError(ConstantContactError):
-    """Unkown response code recieved."""
-    pass
-
 class ConstantConstactInvalidMethodCallError(ConstantContactError):
     """Invalid method call."""
     pass
@@ -47,6 +19,14 @@ class ConstantConstactInvalidMethodCallError(ConstantContactError):
 class ConstantContactInvalidValueError(ConstantContactError):
 	"""Invalid value passed"""
 	pass
+
+class ConstantContactConfigurationError(ConstantContactError):
+	"""Invalid configuration"""
+	pass	
+
+class ConstantConctactServerError(ConstantContactError):
+    """Server error."""
+    pass
 
 class ConstantContactClient(object):
 	def __init__(self, api_key=None,access_token=None):
@@ -58,56 +38,49 @@ class ConstantContactClient(object):
 			raise ConstantConstactInvalidMethodCallError("No email provided to GET contact")
 		params = self.get_params()
 		params['email'] = email
-		# params['status'] = 'ACTIVE'
 		response = requests.get(baseurl+contactspath,params=params,headers=self.get_header())
-		code = response.status_code
-		if code == 200:
+		if response.status_code == requests.codes['OK']:
 			contacts = response.json()['results']
 			if len(contacts) == 0:
-				return None
+				return {'status': 404, 'contact': None}
 			elif len(contacts) == 1:
 				"""if the data is clean we should only get 1 email in the list"""
-				return contacts[0]
+				return {'status': 200, 'contact': contacts[0]}
 			else:
 				"""this case shouldn't happen but IS in the Tone It Up data. Advice from CC is to 
 				ignore the email with an id of 0 and use the other"""
 				if contacts[0]['id']==0:
-					return contacts[1]
+					return {'status': 200, 'contact': contacts[1]}
 				else:
-					return contacts[0] 
-		elif code == 401:
-			"""auth error"""
-			raise ConstantConctactAuthError(response.text,code)
-		elif code == 404:
+					return {'status': 200, 'contact': contacts[0]}
+		elif response.status_code == 403:
+			"""rate limit"""
+			return {'status': 403, 'contact': None}
+		elif response.status_code == 404:
 			"""contact not found"""
-			return None
-		elif code == 406:
-			raise ConstantConctactHeaderError(response.text,code)
-		elif code == 500:
-			raise ConstantConctactServerError(response.text,code)
+			return {'status': 404, 'contact': None}
+		elif response.status_code == 500:
+			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
-			raise ConstantConstactUnkownResponseCodeError(response.text,code)
+		 	response.raise_for_status()
 
 	def get_contact_by_id(self, ccid=None):
 		if ccid == None:
 			raise ConstantConstactInvalidMethodCallError("No ccid provided to GET contact")
 		params = self.get_params()		
 		response = requests.get(baseurl+contactspath+'/'+ccid,params=params,headers=self.get_header())
-		code = response.status_code
-		if code == 200:
-			return response.json()
-		elif code == 401:
-			"""auth error"""
-			raise ConstantConctactAuthError(response.text,code)
-		elif code == 404:
+		if response.status_code == requests.codes['OK']:
+			return {'status': 200, 'contact' :response.json()}
+		elif response.status_code == 403:
+			"""rate limit"""
+			return {'status': 403, 'contact': None}
+		elif response.status_code == 404:
 			"""contact not found"""
-			return None
-		elif code == 406:
-			raise ConstantConctactHeaderError(response.text,code)
-		elif code == 500:
-			raise ConstantConctactServerError(response.text,code)
+			return {'status': 404, 'contact':None}
+		elif response.status_code == 500:
+			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
-			raise ConstantConstactUnkownResponseCodeError(response.text,code) 
+		 	response.raise_for_status()
 
 	def put_contact(self, contact=None):
 		if contact == None:
@@ -116,21 +89,15 @@ class ConstantContactClient(object):
 		params['action_by'] = 'ACTION_BY_OWNER'
 		response = requests.put(baseurl+contactspath+'/'+contact['id'],params=params,
 			                    headers=self.get_header(),data=json.dumps(contact))
-		code = response.status_code
-		if code  == 200:
-			return response.json()['id']
-		elif code == 401:
-			"""auth error"""
-			raise ConstantConctactAuthError(response.text,code)
-		elif code == 404:
-			"""contact not found"""
-			raise ConstantConstactNotFoundError(response.text,code)
-		elif code == 406 or code == 415:
-			raise ConstantConctactHeaderError(response.text,code)
-		elif code == 500:
-			raise ConstantConctactServerError(response.text,code)
+		if response.status_code == requests.codes['OK']:
+			return {'status': 200, 'contact_id' : response.json()['id'] }
+		elif response.status_code == 403:
+			"""rate limit"""
+			return {'status': 403, 'contact': None}
+		elif response.status_code == 500:
+			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
-			raise ConstantConstactUnkownResponseCodeError(response.text,code)
+		 	response.raise_for_status()
 
 	def post_contact(self, contact=None):
 		if contact == None:
@@ -140,20 +107,15 @@ class ConstantContactClient(object):
 		response = requests.post(baseurl+contactspath,params=params,headers=self.get_header(),
 			                     data=json.dumps(contact))
 		code = response.status_code 
-		if code == 201:
-			return response.json()['id']
-		elif code == 401:
-			"""auth error"""
-			raise ConstantConctactAuthError(response.text,code)
-		elif code == 406 or code == 415:
-			raise ConstantConctactHeaderError(response.text,code)
-		elif code == 409:
-			"""email in use"""
-			raise ConstantConstactEmailInUseError(response.text,code)
-		elif code == 500:
-			raise ConstantConctactServerError(response.text,code)
+		if response.status_code == requests.codes['OK']:
+			return {'status': 200, 'contact_id' : response.json()['id'] }
+		elif response.status_code == 403:
+			"""rate limit"""
+			return {'status': 403, 'contact': None}
+		elif response.status_code == 500:
+			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
-			raise ConstantConstactUnkownResponseCodeError(response.text,code)
+		 	response.raise_for_status()
 		
 	def get_params(self):
 		"""standard params for cc call"""
@@ -215,7 +177,7 @@ class ConstantContactClient(object):
 
 	def transform_addresses(self,address_values):
 		if len(address_values) > 2:
-			raise ConstantContactError("CC only supporst 2 addresses. " + 
+			raise ConstantContactConfigurationError("CC only supporst 2 addresses. " + 
 										str(len(address_values)) + " were passed")
 
 		address_transforms = {'city':self.transform_string50,
@@ -283,7 +245,7 @@ class ConstantContactClient(object):
 				elif cc_attribute_parts[0] == 'business_address':
 					business_address[cc_attribute_parts[1]] = contact_values[attribute]
 				else:
-					raise ConstantContactError('Invalid configuration only addresses (personal_address/business_address)' + 
+					raise ConstantContactConfigurationError('Invalid configuration only addresses (personal_address/business_address)' + 
 					       ' may be referenced by \'.\' notation: ' +  cc_attribute, 0)
 			else:
 				contact[cc_attribute] = attribute_transformations[cc_attribute](contact_values[attribute])

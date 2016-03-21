@@ -12,6 +12,7 @@ ENV_VARS = {
     'APP_QUEUE_MIN_RETRIES': 3,
     'APP_QUEUE_MAX_RETRIES': 15,
     'APP_QUEUE_RETRY_DELAY': 1,
+    'APP_DEFAULT_UPDATE_DELTA_HOURS':24,
     'JANRAIN_URI': '',
     'JANRAIN_CLIENT_ID': '',
     'JANRAIN_CLIENT_SECRET': '',
@@ -19,14 +20,12 @@ ENV_VARS = {
     'JANRAIN_BATCH_SIZE': 1000,
     'JANRAIN_CC_ATTRIBUTE_MAPPING': '',
     'JANRAIN_CC_CUSTOM_FIELD_MAPPING': '',
-    'JANRAIN_CCID_ATTR_NAME': 'customContactId',
     'AWS_SQS_QUEUE_NAME': '',
-    'AWS_REGION': '',
-    'AWS_SDB_DOMAIN_NAME': '',
-    'AWS_SDB_ITEM_NAME': '',
     'CC_API_KEY': '',
     'CC_ACCESS_TOKEN': '',
-    'CC_LIST_IDS': ''
+    'CC_LIST_IDS': '',
+    'CC_MAX_RETRIES': 3,
+    'CC_RETRY_TIMEOUT': .5
 }
 
 def get_config():
