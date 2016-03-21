@@ -2,4 +2,4 @@ version: 1
 cron:
  - name: "sync"
    url: "/sync"
-   schedule: "*/5 * * * *"
+   schedule: "0 0 * * *"
