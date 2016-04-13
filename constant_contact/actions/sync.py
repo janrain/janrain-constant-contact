@@ -297,7 +297,7 @@ def load_records(sync_info,config,logger):
         records_count += 1
     logger.info("total records fetched: %d", records_count)
 
-def log_and_return_warning(message):
+def log_and_return_warning(message,logger):
     logger.warning(message)
     return False
 
