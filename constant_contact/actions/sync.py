@@ -125,8 +125,10 @@ def init_sync(config,logger):
 def init_aws(sync_info,config,logger):
     logger.debug("intializing sqs and dynamodb")
 
-    dynamo_resource = boto3.resource('dynamodb',region_name=config['AWS_REGION'])
-    dynamo_client   = boto3.client('dynamodb',region_name=config['AWS_REGION'])
+    boto3.setup_default_session(region_name=config['AWS_REGION'])
+
+    dynamo_resource = boto3.resource('dynamodb')
+    dynamo_client   = boto3.client('dynamodb')
 
     job_table = "constant_contact_job"
     
@@ -184,7 +186,7 @@ def init_aws(sync_info,config,logger):
         return log_and_return_warning("aborting: AWS_SQS_QUEUE_NAME is not configured",logger)
     try: 
         sqs = boto3.resource('sqs')
-        sync_info['queue'] = sqs.create_queue(QueueName=config['AWS_SQS_QUEUE_NAME'],region_name=config['AWS_REGION'])
+        sync_info['queue'] = sqs.create_queue(QueueName=config['AWS_SQS_QUEUE_NAME'])
     except Exception as e:
         #specific exceptions
         return log_and_return_warning("unable to connect to sqs: error detected: " +
