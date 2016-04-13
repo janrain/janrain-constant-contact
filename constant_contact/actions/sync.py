@@ -123,10 +123,10 @@ def init_sync(config,logger):
         return sync_info
 
 def init_aws(sync_info,config,logger):
-    logger.debug("intializing aws sqs and dynamodb")
+    logger.debug("intializing sqs and dynamodb")
 
-    dynamo_resource = boto3.resource('dynamodb',config['REGION'])
-    dynamo_client   = boto3.client('dynamodb',config['REGION'])
+    dynamo_resource = boto3.resource('dynamodb',region_name=config['AWS_REGION'])
+    dynamo_client   = boto3.client('dynamodb',region_name=config['AWS_REGION'])
 
     job_table = "constant_contact_job"
     

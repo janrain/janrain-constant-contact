@@ -22,6 +22,7 @@ ENV_VARS = {
     'JANRAIN_CC_ATTRIBUTE_MAPPING': '',
     'JANRAIN_CC_CUSTOM_FIELD_MAPPING': '',
     'AWS_SQS_QUEUE_NAME': '',
+    'AWS_REGION':'',
     'CC_API_KEY': '',
     'CC_ACCESS_TOKEN': '',
     'CC_LIST_IDS': '',
