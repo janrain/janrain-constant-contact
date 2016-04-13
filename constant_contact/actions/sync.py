@@ -149,7 +149,7 @@ def init_aws(sync_info,config,logger):
             #wait for contirmation that the table exists
             table.meta.client.get_waiter('table_exists').wait(TableName=job_table)
         else:
-            return log_and_return_warning("unable to create " + job_table)
+            return log_and_return_warning("unable to create " + job_table,logger)
 
     index_table = 'constant_contact_index'
 
@@ -172,21 +172,21 @@ def init_aws(sync_info,config,logger):
             #wait for contirmation that the table exists
             table.meta.client.get_waiter('table_exists').wait(TableName=index_table)
         else:
-            log_and_return_warning("unable to create " + index_table)
+            log_and_return_warning("unable to create " + index_table,logger)
     
     sync_info['job_table'] = dynamo_resource.Table(job_table)
     sync_info['index_table'] = dynamo_resource.Table(index_table)
 
     aws_sqs_queue_name = config['AWS_SQS_QUEUE_NAME']
     if not aws_sqs_queue_name:
-        return log_and_return_warning("aborting: AWS_SQS_QUEUE_NAME is not configured")
+        return log_and_return_warning("aborting: AWS_SQS_QUEUE_NAME is not configured",logger)
     try: 
         sqs = boto3.resource('sqs')
         sync_info['queue'] = sqs.create_queue(QueueName=config['AWS_SQS_QUEUE_NAME'])
     except Exception as e:
         #specific exceptions
         log_and_return_warning("unable to connect to sqs: error detected: " +
-                                 str(traceback.format_exception(*sys.exc_info())))
+                                 str(traceback.format_exception(*sys.exc_info())),logger)
 
     logger.debug("aws complete")
     return True
@@ -209,7 +209,7 @@ def init_janrain(sync_info,config,logger):
     else: 
         passed = True
     if not passed:
-        log_and_return_warning(message)
+        log_and_return_warning(message,logger)
 
     capture_app = janrain_datalib.get_app(janrain_uri,janrain_client_id,janrain_client_secret)
     sync_info['capture_app'] = capture_app
@@ -268,7 +268,7 @@ def init_cc(sync_info,config,logger):
     else:
         passed = True
     if not passed:
-        log_and_return_warning(message)
+        log_and_return_warning(message,logger)
     sync_info['cc_list_ids'] = list_ids
     sync_info['cc_client'] = cc_client
 
