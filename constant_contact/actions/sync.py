@@ -31,7 +31,7 @@ def sync():
     config = app.config.copy()
     future = app.threadexecutor.submit(_sync,config,logger)
 
-    if get_bool(config['APP_RUN_SYNCRONOUS']):
+    if get_bool(config['APP_RUN_SYNCHRONOUS']):
         app.logger.info(future.result())
 
     return "ok", 200
@@ -125,8 +125,8 @@ def init_sync(config,logger):
 def init_aws(sync_info,config,logger):
     logger.debug("intializing aws sqs and dynamodb")
 
-    dynamo_resource = boto3.resource('dynamodb')
-    dynamo_client   = boto3.client('dynamodb')
+    dynamo_resource = boto3.resource('dynamodb',config['REGION'])
+    dynamo_client   = boto3.client('dynamodb',config['REGION'])
 
     job_table = "constant_contact_job"
     
