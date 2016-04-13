@@ -29,11 +29,11 @@ class ConstantConctactServerError(ConstantContactError):
     pass
 
 class ConstantContactClient(object):
-	def __init__(self, api_key=None,access_token=None):
+	def __init__(self, api_key,access_token):
 		self.api_key = api_key
 		self.access_token = access_token
 
-	def get_contact_by_email(self, email=None):
+	def get_contact_by_email(self, email):
 		if email == None:
 			raise ConstantConstactInvalidMethodCallError("No email provided to GET contact")
 		params = self.get_params()
@@ -59,12 +59,10 @@ class ConstantContactClient(object):
 		elif response.status_code == 404:
 			"""contact not found"""
 			return {'status': 404, 'contact': None}
-		elif response.status_code == 500:
-			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
 		 	response.raise_for_status()
 
-	def get_contact_by_id(self, ccid=None):
+	def get_contact_by_id(self, ccid):
 		if ccid == None:
 			raise ConstantConstactInvalidMethodCallError("No ccid provided to GET contact")
 		params = self.get_params()		
@@ -77,43 +75,36 @@ class ConstantContactClient(object):
 		elif response.status_code == 404:
 			"""contact not found"""
 			return {'status': 404, 'contact':None}
-		elif response.status_code == 500:
-			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
 		 	response.raise_for_status()
 
-	def put_contact(self, contact=None):
+	def put_contact(self, contact):
 		if contact == None:
 			raise ConstantConstactInvalidMethodCallError("No contact provided to PUT")
 		params = self.get_params()
 		params['action_by'] = 'ACTION_BY_OWNER'
 		response = requests.put(baseurl+contactspath+'/'+contact['id'],params=params,
 			                    headers=self.get_header(),data=json.dumps(contact))
-		if response.status_code == requests.codes['OK']:
+		if response.status_code == requests.codes.ok:
 			return {'status': 200, 'contact_id' : response.json()['id'] }
 		elif response.status_code == 403:
 			"""rate limit"""
 			return {'status': 403, 'contact': None}
-		elif response.status_code == 500:
-			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
 		 	response.raise_for_status()
 
-	def post_contact(self, contact=None):
+	def post_contact(self, contact):
 		if contact == None:
 			raise ConstantConstactInvalidMethodCallError("No contact provided to POST")
 		params = self.get_params()
 		params['action_by'] = 'ACTION_BY_OWNER'
 		response = requests.post(baseurl+contactspath,params=params,headers=self.get_header(),
 			                     data=json.dumps(contact))
-		code = response.status_code 
-		if response.status_code == requests.codes['OK']:
+		if response.status_code == 201:
 			return {'status': 200, 'contact_id' : response.json()['id'] }
 		elif response.status_code == 403:
 			"""rate limit"""
 			return {'status': 403, 'contact': None}
-		elif response.status_code == 500:
-			raise ConstantConctactServerError(response.text,response.status_code)
 		else:
 		 	response.raise_for_status()
 		

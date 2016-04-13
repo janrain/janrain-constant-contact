@@ -4,9 +4,11 @@ import boto3
 import janrain_datalib
 import json
 import sys
+import logging
 import collections
 import traceback
 import datetime
+import concurrent.futures
 from time import sleep
 from .constant_contact_client import *
 
@@ -23,6 +25,18 @@ class MaxRetriesError(Exception):
         return 'max retries exceeded for call: ' + call_info
 
 def sync():
+    app.threadexecutor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    logger = logging.getLogger(app.config['LOGGER_NAME'])
+    config = app.config.copy()
+    future = app.threadexecutor.submit(_sync,config,logger)
+
+    if get_bool(config['APP_RUN_SYNCRONOUS']):
+        app.logger.info(future.result())
+
+    return "ok", 200
+
+def _sync(config,logger):
     """The main sync method. 
         Spin up the queue_reader_process to process records from the An event 
         is passed to the process to enable this method to signal when all records 
@@ -32,29 +46,21 @@ def sync():
         """
 
     """SyncInfo object to pass references around"""    
-    sync_info = init_sync()
+    sync_info = init_sync(config,logger)
 
     if not sync_info:
-        app.logger.warning("Not able to initialize sync, shutting down")
+        logger.warning("Not able to initialize sync, shutting down")
         return "intialization error"
 
-    app.logger.info("processing queue for retries")
+    logger.info("processing queue for retries")
     """messages encountered will not be retried if they fail"""
-    process_queue(sync_info,False)
+    process_queue(sync_info,False,config,logger)
 
     """load updates into queue, if ccid attribute is missing add it"""
-    try: 
-        load_records(sync_info)
-
-    except janrain_datalib.exceptions.ApiError as e:
-        if e.message.find('subpath ' + sync_info['janrain_ccid_name'] + ' does not exist') > -1:
-            sync_info['capture_schema'].add_attribute({'name': sync_info['janrain_ccid_name'], 'type': 'string'})
-            load_records(sync_info)
-        else:
-            raise
+    load_records(sync_info,config,logger)
         
     try:
-        process_queue(sync_info,True)
+        process_queue(sync_info,True,config,logger)
     finally:
         sync_info['job_table'].update_item(Key={'job_id':'sync_job'},
                                 UpdateExpression='SET running = :val1',
@@ -62,7 +68,7 @@ def sync():
 
     return "done"
 
-def init_sync():
+def init_sync(config,logger):
     """initialize all needed services and store references in dict with the
         the following values:
 
@@ -81,10 +87,9 @@ def init_sync():
         last_run_time
     """
     sync_info = {}
-
-    sync_info = init_aws(sync_info)
-    if not sync_info:
-        return sync_info
+    
+    if not init_aws(sync_info,config,logger):
+        return None
 
     """check for info from last run. if there is a run in progress still aborting
         if there is no info to be found set the lock and set last_run_time to now - 15minutes
@@ -94,31 +99,31 @@ def init_sync():
     try: 
         job = response['Item']
         if job['running']:
-            return log_and_return_warning("aborting: sync is already in process")
+            logger.warning("aborting: sync is already in process")
+            return None
         last_run = job['run_start']
         job_table.update_item(Key={'job_id':'sync_job'},
                                 UpdateExpression='SET running = :val1, run_start = :val2',
-                                ExpressionAttributeValues={':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
+                                ExpressionAttributeValues=
+                                    {':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
     except KeyError:
         job_table.put_item(Item={'job_id':'sync_job','running':True,
                                                     'run_start': datetime.datetime.utcnow().__str__()})
-        last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=app.config['APP_DEFAULT_UPDATE_DELTA_HOURS'])).__str__()
+        last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=get_int(config['APP_DEFAULT_UPDATE_DELTA_HOURS']))).__str__()
         pass
     sync_info['job_table'] = job_table
     sync_info['last_run'] = last_run
 
-    sync_info = init_janrain(sync_info)
-    if not sync_info:
-        return sync_info
+    if not init_janrain(sync_info,config,logger):
+        return None
     
-    sync_info = init_cc(sync_info)
-    if not sync_info:
+    if not init_cc(sync_info,config,logger):
+        return None
+    else:
         return sync_info
-    
-    return sync_info
 
-def init_aws(sync_info):
-    app.logger.debug("intializing aws sqs and sdb")
+def init_aws(sync_info,config,logger):
+    logger.debug("intializing aws sqs and dynamodb")
 
     dynamo_resource = boto3.resource('dynamodb')
     dynamo_client   = boto3.client('dynamodb')
@@ -144,7 +149,7 @@ def init_aws(sync_info):
             #wait for contirmation that the table exists
             table.meta.client.get_waiter('table_exists').wait(TableName=job_table)
         else:
-            log_and_return_warning("unable to create " + job_table)
+            return log_and_return_warning("unable to create " + job_table)
 
     index_table = 'constant_contact_index'
 
@@ -172,44 +177,51 @@ def init_aws(sync_info):
     sync_info['job_table'] = dynamo_resource.Table(job_table)
     sync_info['index_table'] = dynamo_resource.Table(index_table)
 
-    aws_sqs_queue_name = app.config['AWS_SQS_QUEUE_NAME']
+    aws_sqs_queue_name = config['AWS_SQS_QUEUE_NAME']
     if not aws_sqs_queue_name:
         return log_and_return_warning("aborting: AWS_SQS_QUEUE_NAME is not configured")
     try: 
         sqs = boto3.resource('sqs')
-        sync_info['queue'] = sqs.create_queue(QueueName=app.config['AWS_SQS_QUEUE_NAME'])
+        sync_info['queue'] = sqs.create_queue(QueueName=config['AWS_SQS_QUEUE_NAME'])
     except Exception as e:
         #specific exceptions
         log_and_return_warning("unable to connect to sqs: error detected: " +
                                  str(traceback.format_exception(*sys.exc_info())))
 
-    app.logger.debug("aws complete")
-    return sync_info
+    logger.debug("aws complete")
+    return True
 
-def init_janrain(sync_info):
-    app.logger.debug("intializing janrain")  
+def init_janrain(sync_info,config,logger):
+    logger.debug("intializing janrain")  
 
     """check that janrain info is configured and create janrain objects for sync"""
-    janrain_uri = app.config['JANRAIN_URI']
+    janrain_uri = config['JANRAIN_URI']
+    janrain_client_id = config['JANRAIN_CLIENT_ID']
+    janrain_client_secret = config['JANRAIN_CLIENT_SECRET']
+    passed = False
+
     if not janrain_uri:
-        return log_and_return_warning("aborting: JANRAIN_URI is not configured")    
-    janrain_client_id = app.config['JANRAIN_CLIENT_ID']
-    if not janrain_client_id:
-        return log_and_return_warning("aborting: JANRAIN_CLIENT_ID is not configured")
-    janrain_client_secret = app.config['JANRAIN_CLIENT_SECRET']
-    if not janrain_client_secret:
-        return log_and_return_warning("aborting: JANRAIN_CLIENT_SECRET is not configured")
+        message = "aborting: JANRAIN_URI is not configured"  
+    elif not janrain_client_id:
+        message = "aborting: JANRAIN_CLIENT_ID is not configured"
+    elif not janrain_client_secret:
+        message = "aborting: JANRAIN_CLIENT_SECRET is not configured"
+    else: 
+        passed = True
+    if not passed:
+        log_and_return_warning(message)
+
     capture_app = janrain_datalib.get_app(janrain_uri,janrain_client_id,janrain_client_secret)
     sync_info['capture_app'] = capture_app
-    janrain_schema_name = app.config['JANRAIN_SCHEMA_NAME']
+    janrain_schema_name = config['JANRAIN_SCHEMA_NAME']
     #should I check for existence (default is user)?
     sync_info['capture_schema'] = capture_app.get_schema(janrain_schema_name)
 
     """we will always sync email so create dictionary if not configured
         all attributes are optional but we will fail if the mapping is configured poorly
     """
-    janrain_attribute_map = eval_mapping(app.config['JANRAIN_CC_ATTRIBUTE_MAPPING'],
-                                                    'JANRAIN_CC_ATTRIBUTE_MAPPING')
+    janrain_attribute_map = eval_mapping(config['JANRAIN_CC_ATTRIBUTE_MAPPING'],
+                                                    'JANRAIN_CC_ATTRIBUTE_MAPPING',logger)
     janrain_attribute_map.pop('email', None)
     janrain_attribute_map['email'] = 'email_addresses'
     sync_info['janrain_attribute_map'] = janrain_attribute_map
@@ -219,8 +231,8 @@ def init_janrain(sync_info):
     janrain_attributes += list(janrain_attribute_map.keys())
 
     """custom fields are optional but we will fail if the mapping is configured poorly"""
-    custom_field_map =  eval_mapping(app.config['JANRAIN_CC_CUSTOM_FIELD_MAPPING'],
-                                                'JANRAIN_CC_CUSTOM_FIELD_MAPPING')
+    custom_field_map =  eval_mapping(config['JANRAIN_CC_CUSTOM_FIELD_MAPPING'],
+                                                'JANRAIN_CC_CUSTOM_FIELD_MAPPING',logger)
     if custom_field_map:
         janrain_attributes += list(custom_field_map.keys())
     sync_info['custom_field_map'] = custom_field_map
@@ -234,81 +246,86 @@ def init_janrain(sync_info):
     
     sync_info['janrain_attributes'] = janrain_attributes
 
-    app.logger.debug("janrain complete")
-    return sync_info
+    logger.debug("janrain complete")
+    return True
 
-def init_cc(sync_info):
-    app.logger.debug ("intializing constant contact")
+def init_cc(sync_info,config,logger):
+    logger.debug ("intializing constant contact")
 
-    list_ids = [x.strip() for x in app.config['CC_LIST_IDS'].split(',')]
-    if not list_ids[0]:
-        return log_and_return_warning("aborting: CC_LIST_IDS is not configured")
-    sync_info['cc_list_ids'] = list_ids
-    cc_api_key = app.config['CC_API_KEY']
-    if not cc_api_key:
-        return log_and_return_warning("aborting: CC_API_KEY is not configured") 
-    cc_access_token = app.config['CC_ACCESS_TOKEN']
-    if not cc_access_token:
-        return log_and_return_warning("aborting: CC_ACCESS_TOKEN is not configured") 
+    list_ids = [x.strip() for x in config['CC_LIST_IDS'].split(',')]
+    cc_api_key = config['CC_API_KEY']
+    cc_access_token = config['CC_ACCESS_TOKEN']
     cc_client = ConstantContactClient(cc_api_key,cc_access_token)
-    if not cc_client.health_check(list_ids[0]):
-        app.logger.error("Can not connect to Constant Contact")
-        return None
+    passed = False
+    if not list_ids[0]:
+        message = "aborting: CC_LIST_IDS is not configured"
+    elif not cc_api_key:
+        message = "aborting: CC_API_KEY is not configured"
+    elif not cc_access_token:
+        message = "aborting: CC_ACCESS_TOKEN is not configured" 
+    elif not cc_client.health_check(list_ids[0]):
+        message = "Can not connect to Constant Contact"
+    else:
+        passed = True
+    if not passed:
+        log_and_return_warning(message)
+    sync_info['cc_list_ids'] = list_ids
     sync_info['cc_client'] = cc_client
 
-    app.logger.debug("constant contact complete")
-    return sync_info
+    logger.debug("constant contact complete")
+    return True
 
-def load_records(sync_info):
+def load_records(sync_info,config,logger):
     """grab records from capture and put them in sqs"""
+    batch_size = get_int(config['JANRAIN_BATCH_SIZE'])
     kwargs = {
-        'batch_size': app.config['JANRAIN_BATCH_SIZE'],
+        'batch_size': batch_size,
         'attributes': sync_info['janrain_attributes'],
     }
-    rf = record_filter(sync_info)
+    rf = record_filter(sync_info,logger)
     if rf:
         kwargs['filtering'] = rf
 
     records_count = 0
-    app.logger.info("starting export from capture with batch size %s...", app.config['JANRAIN_BATCH_SIZE'])
+    logger.info("starting export from capture with batch size %s...", batch_size)
 
     for record_num, record in enumerate(sync_info['capture_schema'].records.iterator(**kwargs), start=1):
-        app.logger.debug("fetched record: %d", record_num)
-        # app.logger.info(record)
-        app.logger.info("sent to queue: " + record['uuid'])
+        logger.debug("fetched record: %d", record_num)
+        # logger.info(record)
+        logger.info("sent to queue: " + record['uuid'])
         sync_info['queue'].send_message(MessageBody=json.dumps(record))
         records_count += 1
-    app.logger.info("total records fetched: %d", records_count)
+    logger.info("total records fetched: %d", records_count)
 
 def log_and_return_warning(message):
-    app.logger.warning(message)
-    return None
+    logger.warning(message)
+    return False
 
-def eval_mapping(mapping_string,attribute_name):
+def eval_mapping(mapping_string,attribute_name,logger):
     """eval mapping environment variables and make sure they produce dictionaries"""
     if mapping_string:
         mapping = {}
         try: 
             mapping = eval(mapping_string)
         except SyntaxError:
-            app.logger.warning("aborting: unable to parse mapping: " + attribute_name)
+            logger.warning("aborting: unable to parse mapping: " + attribute_name)
             return None
         if not type(mapping) is dict:
-            app.logger.warning("aborting: parsing mapping did not produce a dictionary: " + attribute_name)
+            logger.warning("aborting: parsing mapping did not produce a dictionary: " + attribute_name)
             return None  
         return mapping
     else:
         return {}
 
-def record_filter(sync_info):
+def record_filter(sync_info,logger):
     """Return the filter to use when fetching records from capture."""
     
     filter_string = "lastUpdated > '" + str(sync_info['last_run']) + "'"
-    app.logger.info("app was last ran at: " + str(sync_info['last_run']) + " configuring filters")
+    logger.info("app was last ran at: " + str(sync_info['last_run']) + " configuring filters")
 
     return filter_string
 
-def process_queue(sync_info,retry):
+def process_queue(sync_info,retry,config,logger):
     """spun up as a separate process from the main sync thread. Polls queue and dispatches messages untill 
        it determines all messages are processed. It will run until either:
         (the number of retries since the last message was found > APP_QUEUE_MIN_RETRIES 
@@ -318,32 +335,32 @@ def process_queue(sync_info,retry):
         the number of retries since the last message was found > APP_QUEUE_MAX_RETRIES"""
     queue_has_messages = True
     retries = 0
-    app.logger.info("processing queue")
-    min_retries = app.config['APP_QUEUE_MIN_RETRIES']
+    logger.info("processing queue")
+    min_retries = get_int(config['APP_QUEUE_MIN_RETRIES'])
     while True:
         messages = sync_info['queue'].receive_messages(MaxNumberOfMessages=5)
         if len(messages) == 0:
             retries += 1
             if retries > min_retries:
-                app.logger.info('found empty queue ' + str(min_retries) + ' times, stopping process')
+                logger.info('found empty queue ' + str(min_retries) + ' times, stopping process')
                 return True
-            sleep(app.config['APP_QUEUE_RETRY_DELAY'])
-            app.logger.info("returned: 0 messages from queue, retry: " + str(retries))
+            sleep(get_float(config['APP_QUEUE_RETRY_DELAY']))
+            logger.info("returned: 0 messages from queue, retry: " + str(retries))
         else:
             retries = 0
-            app.logger.info("returned: " + str(len(messages))+ " messages from queue")
+            logger.info("returned: " + str(len(messages))+ " messages from queue")
             for m in messages:
-                success = process_message(m,sync_info) 
+                success = process_message(m,sync_info,config,logger) 
                 if success == -1 and retry == true:
-                    app.logger.info("leaving message in queue for next run")
+                    logger.info("leaving message in queue for next run")
                     return True
                 elif success == 1:
-                    app.logger.debug("message complete, deleting")
+                    logger.debug("message complete, deleting")
                 else:
-                    app.logger.info("message unable to be processed, no retry deleting") 
+                    logger.info("message unable to be processed, no retry deleting") 
                 m.delete()    
 
-def process_message(message,sync_info):
+def process_message(message,sync_info,config,logger):
     """process a message from the queue. contains the main business logic of how an update is made"""
     try:    
         janrain_user_info = json.loads(message.body)
@@ -351,11 +368,11 @@ def process_message(message,sync_info):
         uuid = janrain_user_info['uuid']
         index_table = sync_info['index_table']
         if email is None:
-            app.logger.info("Skipping record with no email: " + uuid)
+            logger.info("Skipping record with no email: " + uuid)
             return 0
         log_tag = email + ':' + uuid + ':'
 
-        app.logger.info(log_tag + " processing message")
+        logger.info(log_tag + " processing message")
         cc_client = sync_info['cc_client']
         cc_contact = None
 
@@ -367,35 +384,35 @@ def process_message(message,sync_info):
             stored_ccid = None
         """attempts to retrieve a contact from cc first by email then by id (if passed), returns
            a contact if found otherwise returns None"""
-        cc_contact = get_by_email_or_id(sync_info,log_tag,email,stored_ccid)
+        cc_contact = get_by_email_or_id(sync_info,log_tag,email,stored_ccid,config,logger)
         """pass contact dictionary (or empty placeholder) to be sent to cc as update or create
            returns the ccid of the contact"""
-        ccid = create_or_update(sync_info, janrain_user_info, log_tag, cc_contact)
+        ccid = create_or_update(sync_info, janrain_user_info, log_tag, cc_contact,config,logger)
         if ccid != stored_ccid:
             """update dynamo if ccid is out of sync"""
-            app.logger.info(log_tag + 'id out of sync in dynamo, updating')
+            logger.info(log_tag + 'id out of sync in dynamo, updating')
             index_table.update_item(Key={'uuid':uuid},
                                 UpdateExpression='SET ccid = :val1',
                                 ExpressionAttributeValues={':val1': ccid})  
             return 1        
         else:
-            app.logger.info("contact id already synced")
+            logger.info("contact id already synced")
             return 1
     except constant_contact_client.ConstantConctactServerError as e:
-        app.logger.info(log_tag + e.message)
+        logger.info(log_tag + e.message)
         """retry""" 
         return -1
     except Exception as e:
-        app.logger.exception('')
+        logger.exception('')
         return 0
 
-def get_by_email_or_id(sync_info,tag,email,cc_id=None):
+def get_by_email_or_id(sync_info,tag,email,cc_id,config,logger):
     """will search for contact by eamil first then by cc_id if it is provided.
         if rate limites errors recieved will retry up to the configed max before
         failing over"""
     tries = 0
     tried_email = False
-    while tries < app.config['CC_MAX_RETRIES']:
+    while tries < get_int(config['CC_MAX_RETRIES']):
         if not tried_email:
             response = sync_info['cc_client'].get_contact_by_email(email)
             if response['status'] == 404:
@@ -403,24 +420,24 @@ def get_by_email_or_id(sync_info,tag,email,cc_id=None):
         elif cc_id:
             response = sync_info['cc_client'].get_contact_by_id(cc_id)
             if response['status'] == 404:
-                app.logger.info(tag + " no contact found, creating")
+                logger.info(tag + " no contact found, creating")
                 return None
         else:
-            app.logger.info(tag + " no contact found, creating")
+            logger.info(tag + " no contact found, creating")
             return None
         if response['status'] == 200:
-            app.logger.info(tag + " contact found, syncing")
+            logger.info(tag + " contact found, syncing")
             return response['contact']
         tries += 1
-        sleep(tries * app.config['CC_RETRY_TIMEOUT'])
+        sleep(tries * get_float(config['CC_RETRY_TIMEOUT']))
     raise MaxRetriesError('get by email or id for: ' + tag)
 
-def create_or_update(sync_info,janrain_user_info,tag,cc_contact=None):
+def create_or_update(sync_info,janrain_user_info,tag,cc_contact,config,logger):
     """if contact passed is empty will route to create otherwise updates
        if rate limit errors recieved will retry up to the configed max before
         failing over """
     tries = 0
-    while tries < app.config['CC_MAX_RETRIES']:
+    while tries < get_int(config['CC_MAX_RETRIES']):
         cc_client = sync_info['cc_client']
         mapping = sync_info['janrain_attribute_map'].copy()
         user = repack_user(sync_info,janrain_user_info)
@@ -441,10 +458,10 @@ def create_or_update(sync_info,janrain_user_info,tag,cc_contact=None):
             operation = 'updated'  
         if response['status'] == 200:
             ccid = response['contact_id']
-            app.logger.debug(tag + operation + ': ' + ccid)
+            logger.debug(tag + operation + ': ' + ccid)
             return ccid     
         tries += 1
-        sleep(tries * app.config['CC_RETRY_TIMEOUT'])
+        sleep(tries * get_float(config['CC_RETRY_TIMEOUT']))
     raise MaxRetriesError('create or update for: ' + tag)
 
 def repack_user(sync_info,janrain_user_info):
@@ -472,4 +489,22 @@ def flatten(d, parent_key='', sep='.'):
         else:
             items.append((new_key, v))
     return dict(items)
+
+def get_float(number):
+    try:
+        return float(number)
+    except ValueError:
+        return number
+
+def get_int(number):
+    try:
+        return int(number)
+    except ValueError:
+        return number
+
+def get_bool(boolean):
+    try:
+        return bool(boolean)
+    except ValueError:
+        return boolean
 
