@@ -184,7 +184,7 @@ def init_aws(sync_info,config,logger):
         return log_and_return_warning("aborting: AWS_SQS_QUEUE_NAME is not configured",logger)
     try: 
         sqs = boto3.resource('sqs')
-        sync_info['queue'] = sqs.create_queue(QueueName=config['AWS_SQS_QUEUE_NAME'])
+        sync_info['queue'] = sqs.create_queue(QueueName=config['AWS_SQS_QUEUE_NAME'],region_name=config['AWS_REGION'])
     except Exception as e:
         #specific exceptions
         return log_and_return_warning("unable to connect to sqs: error detected: " +
