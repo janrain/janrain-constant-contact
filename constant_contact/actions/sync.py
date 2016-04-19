@@ -267,7 +267,7 @@ def init_cc(sync_info,config,logger):
         message = "aborting: CC_API_KEY is not configured"
     elif not cc_access_token:
         message = "aborting: CC_ACCESS_TOKEN is not configured" 
-    elif not cc_client.health_check(list_ids[0]):
+    elif not cc_client.health_check(list_ids[0],logger):
         message = "Can not connect to Constant Contact"
     else:
         passed = True
@@ -391,7 +391,9 @@ def process_message(message,sync_info,config,logger):
         cc_contact = get_by_email_or_id(sync_info,log_tag,email,stored_ccid,config,logger)
         """pass contact dictionary (or empty placeholder) to be sent to cc as update or create
            returns the ccid of the contact"""
+        sleep(get_float(config['CC_CALL_TIMEOUT']))
         ccid = create_or_update(sync_info, janrain_user_info, log_tag, cc_contact,config,logger)
+        sleep(get_float(config['CC_CALL_TIMEOUT']))
         if ccid != stored_ccid:
             """update dynamo if ccid is out of sync"""
             logger.info(log_tag + 'id out of sync in dynamo, updating')

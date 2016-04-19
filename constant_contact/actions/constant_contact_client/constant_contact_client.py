@@ -251,7 +251,7 @@ class ConstantContactClient(object):
 			contact['addresses'] = self.transform_addresses(addresses)
 		return contact
 
-	def health_check(self,list_id=None):
+	def health_check(self,list_id,logger):
 		"""checks that the list id exists"""
 		if list_id == None:
 			raise ConstantConstactInvalidMethodCallError("No list_id provided to health_check")
@@ -259,8 +259,10 @@ class ConstantContactClient(object):
 		response = requests.get(baseurl+listspath+'/'+list_id,params=params,headers=self.get_header())
 		code = response.status_code
 		if code == 200:
+			logger.info(response)
 			return True
 		else:
+			logger.info(response)
 			return False
 
 

@@ -27,7 +27,8 @@ ENV_VARS = {
     'CC_ACCESS_TOKEN': '',
     'CC_LIST_IDS': '',
     'CC_MAX_RETRIES': 3,
-    'CC_RETRY_TIMEOUT': .5
+    'CC_RETRY_TIMEOUT': 1,
+    'CC_CALL_TIMEOUT':1
 }
 
 def get_config():
