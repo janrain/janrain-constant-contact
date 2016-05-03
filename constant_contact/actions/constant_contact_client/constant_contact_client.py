@@ -143,12 +143,7 @@ class ConstantContactClient(object):
 		return val
 
 	def transform_string2(self,string):
-		if string == None:
-			return ''
-		elif len(string) == 2:
-			return string
-		else:
-			return ''
+		return string if len(str(string)) == 2 else ''
 
 	def transform_string4(self,string):
 		if string == None:
