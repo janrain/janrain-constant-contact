@@ -100,30 +100,30 @@ def init_sync(config,logger):
     
     if not init_aws(sync_info,config,logger):
         return None
-    else:
-        """check for info from last run. if there is a run in progress still aborting
-        if there is no info to be found set the lock and set last_run_time to now - 15minutes
-        """
-        job_table = sync_info['job_table']
-        response = job_table.get_item(Key={'job_id':'sync_job'})
-        try: 
-            job = response['Item']
-            if job['running']:
-                logger.warning("aborting: sync is already in process")
-                return None
-            last_run = job['run_start']
-            job_table.update_item(Key={'job_id':'sync_job'},
-                                UpdateExpression='SET running = :val1, run_start = :val2',
-                                ExpressionAttributeValues=
-                                    {':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
-        except KeyError:
-            job_table.put_item(Item={'job_id':'sync_job','running':True,
-                                                    'run_start': datetime.datetime.utcnow().__str__()})
-            last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=get_int(config['APP_DEFAULT_UPDATE_DELTA_HOURS']))).__str__()
-            pass
-        sync_info['job_table'] = job_table
-        sync_info['last_run'] = last_run
-        return sync_info
+    
+    """check for info from last run. if there is a run in progress still aborting
+    if there is no info to be found set the lock and set last_run_time to now - 15minutes
+    """
+    job_table = sync_info['job_table']
+    response = job_table.get_item(Key={'job_id':'sync_job'})
+    try: 
+        job = response['Item']
+        if job['running']:
+            logger.warning("aborting: sync is already in process")
+            return None
+        last_run = job['run_start']
+        job_table.update_item(Key={'job_id':'sync_job'},
+                            UpdateExpression='SET running = :val1, run_start = :val2',
+                            ExpressionAttributeValues=
+                                {':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
+    except KeyError:
+        job_table.put_item(Item={'job_id':'sync_job','running':True,
+                                                'run_start': datetime.datetime.utcnow().__str__()})
+        last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=get_int(config['APP_DEFAULT_UPDATE_DELTA_HOURS']))).__str__()
+        pass
+    sync_info['job_table'] = job_table
+    sync_info['last_run'] = last_run
+    return sync_info
 
 def init_aws(sync_info,config,logger):
     logger.debug("intializing sqs and dynamodb")
@@ -367,18 +367,19 @@ def process_queue(sync_info,config,logger):
             for m in messages:
                 if not clear_queue:
                     status = process_message(m,sync_info,config,logger) 
-                if status == 'RETRY_ERROR':
-                    if retry_errors_in_row >= max_retry_errors_in_row:
-                        logger.info("rate limit errors in a row exceeded, deleting all remaining records")
-                        clear_queue = True
-                    else:
-                        logger.info("rate limit retries exceeded")
-                        retry_errors_in_row += 1
-                elif status == 'SUCCESS':
-                    logger.debug("")
-                    retry_errors_in_row = 0
                 else:
-                    logger.info("unable to process message") 
+                    if status == 'RETRY_ERROR':
+                        if retry_errors_in_row >= max_retry_errors_in_row:
+                            logger.info("rate limit errors in a row exceeded, deleting all remaining records")
+                            clear_queue = True
+                        else:
+                            logger.info("rate limit retries exceeded")
+                            retry_errors_in_row += 1
+                    elif status == 'SUCCESS':
+                        logger.debug("")
+                        retry_errors_in_row = 0
+                    else:
+                        logger.info("unable to process message") 
                 m.delete()    
 
 def process_message(message,sync_info,config,logger):
