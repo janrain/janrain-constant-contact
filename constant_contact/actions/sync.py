@@ -54,13 +54,17 @@ def _sync(config,logger):
 
     logger.info("processing queue for retries")
     """messages encountered will not be retried if they fail"""
-    process_queue(sync_info,False,config,logger)
+    # commenting out since we expect to run out of api calls each day right now,
+    # the queue will grow continuously unless we start fresh each day.
+    # process_queue(sync_info,False,config,logger)
 
     """load updates into queue, if ccid attribute is missing add it"""
     load_records(sync_info,config,logger)
         
+    # try:
+    #     process_queue(sync_info,True,config,logger)
     try:
-        process_queue(sync_info,True,config,logger)
+        process_queue(sync_info,config,logger)
     finally:
         sync_info['job_table'].update_item(Key={'job_id':'sync_job'},
                                 UpdateExpression='SET running = :val1',
@@ -87,39 +91,38 @@ def init_sync(config,logger):
         last_run_time
     """
     sync_info = {}
-    
-    if not init_aws(sync_info,config,logger):
-        return None
-
-    """check for info from last run. if there is a run in progress still aborting
-        if there is no info to be found set the lock and set last_run_time to now - 15minutes
-        """
-    job_table = sync_info['job_table']
-    response = job_table.get_item(Key={'job_id':'sync_job'})
-    try: 
-        job = response['Item']
-        if job['running']:
-            logger.warning("aborting: sync is already in process")
-            return None
-        last_run = job['run_start']
-        job_table.update_item(Key={'job_id':'sync_job'},
-                                UpdateExpression='SET running = :val1, run_start = :val2',
-                                ExpressionAttributeValues=
-                                    {':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
-    except KeyError:
-        job_table.put_item(Item={'job_id':'sync_job','running':True,
-                                                    'run_start': datetime.datetime.utcnow().__str__()})
-        last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=get_int(config['APP_DEFAULT_UPDATE_DELTA_HOURS']))).__str__()
-        pass
-    sync_info['job_table'] = job_table
-    sync_info['last_run'] = last_run
 
     if not init_janrain(sync_info,config,logger):
         return None
     
     if not init_cc(sync_info,config,logger):
         return None
+    
+    if not init_aws(sync_info,config,logger):
+        return None
     else:
+        """check for info from last run. if there is a run in progress still aborting
+        if there is no info to be found set the lock and set last_run_time to now - 15minutes
+        """
+        job_table = sync_info['job_table']
+        response = job_table.get_item(Key={'job_id':'sync_job'})
+        try: 
+            job = response['Item']
+            if job['running']:
+                logger.warning("aborting: sync is already in process")
+                return None
+            last_run = job['run_start']
+            job_table.update_item(Key={'job_id':'sync_job'},
+                                UpdateExpression='SET running = :val1, run_start = :val2',
+                                ExpressionAttributeValues=
+                                    {':val1': True, ':val2': datetime.datetime.utcnow().__str__()})
+        except KeyError:
+            job_table.put_item(Item={'job_id':'sync_job','running':True,
+                                                    'run_start': datetime.datetime.utcnow().__str__()})
+            last_run = (datetime.datetime.utcnow() - datetime.timedelta(hours=get_int(config['APP_DEFAULT_UPDATE_DELTA_HOURS']))).__str__()
+            pass
+        sync_info['job_table'] = job_table
+        sync_info['last_run'] = last_run
         return sync_info
 
 def init_aws(sync_info,config,logger):
@@ -154,7 +157,9 @@ def init_aws(sync_info,config,logger):
             return log_and_return_warning("unable to connect to sqs: error detected: " +
                                  str(traceback.format_exception(*sys.exc_info())),logger)
 
+    logger.debug("found job table")        
     index_table = 'constant_contact_index'
+
 
     try:
         dynamo_client.describe_table(TableName=index_table)
@@ -177,6 +182,7 @@ def init_aws(sync_info,config,logger):
         else:
             return log_and_return_warning("unable to connect to dynamo index table: error detected: " +
                                  str(traceback.format_exception(*sys.exc_info())),logger)
+    logger.debug("found index table")
     
     sync_info['job_table'] = dynamo_resource.Table(job_table)
     sync_info['index_table'] = dynamo_resource.Table(index_table)
@@ -191,6 +197,7 @@ def init_aws(sync_info,config,logger):
         #specific exceptions
         return log_and_return_warning("unable to connect to sqs: error detected: " +
                                  str(traceback.format_exception(*sys.exc_info())),logger)
+    logger.debug("sqs ready")
 
     logger.debug("aws complete")
     return True
@@ -329,7 +336,7 @@ def record_filter(sync_info,logger):
 
     return filter_string
 
-def process_queue(sync_info,retry,config,logger):
+def process_queue(sync_info,config,logger):
     """spun up as a separate process from the main sync thread. Polls queue and dispatches messages untill 
        it determines all messages are processed. It will run until either:
         (the number of retries since the last message was found > APP_QUEUE_MIN_RETRIES 
@@ -341,6 +348,10 @@ def process_queue(sync_info,retry,config,logger):
     retries = 0
     logger.info("processing queue")
     min_retries = get_int(config['APP_QUEUE_MIN_RETRIES'])
+    max_retry_errors_in_row = get_int(config['APP_MAX_RETRY_ERRORS_IN_ROW'])
+    retry_errors_in_row = 0
+    clear_queue = False
+    status = 'INIT'
     while True:
         messages = sync_info['queue'].receive_messages(MaxNumberOfMessages=5)
         if len(messages) == 0:
@@ -354,14 +365,20 @@ def process_queue(sync_info,retry,config,logger):
             retries = 0
             logger.info("returned: " + str(len(messages))+ " messages from queue")
             for m in messages:
-                success = process_message(m,sync_info,config,logger) 
-                if success == -1 and retry == true:
-                    logger.info("leaving message in queue for next run")
-                    return True
-                elif success == 1:
-                    logger.debug("message complete, deleting")
+                if not clear_queue:
+                    status = process_message(m,sync_info,config,logger) 
+                if status == 'RETRY_ERROR':
+                    if retry_errors_in_row >= max_retry_errors_in_row:
+                        logger.info("rate limit errors in a row exceeded, deleting all remaining records")
+                        clear_queue = True
+                    else:
+                        logger.info("rate limit retries exceeded")
+                        retry_errors_in_row += 1
+                elif status == 'SUCCESS':
+                    logger.debug("")
+                    retry_errors_in_row = 0
                 else:
-                    logger.info("message unable to be processed, no retry deleting") 
+                    logger.info("unable to process message") 
                 m.delete()    
 
 def process_message(message,sync_info,config,logger):
@@ -400,17 +417,17 @@ def process_message(message,sync_info,config,logger):
             index_table.update_item(Key={'uuid':uuid},
                                 UpdateExpression='SET ccid = :val1',
                                 ExpressionAttributeValues={':val1': ccid})  
-            return 1        
+            return 'SUCCESS'        
         else:
             logger.info("contact id already synced")
-            return 1
-    except constant_contact_client.ConstantConctactServerError as e:
+            return 'SUCCESS'
+    except MaxRetriesError as e:
         logger.info(log_tag + e.message)
         """retry""" 
-        return -1
+        return 'RETRY_ERROR'
     except Exception as e:
         logger.exception('')
-        return 0
+        return 'ERROR'
 
 def get_by_email_or_id(sync_info,tag,email,cc_id,config,logger):
     """will search for contact by eamil first then by cc_id if it is provided.

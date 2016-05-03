@@ -1,6 +1,4 @@
-/env.sh
-/env-dev.sh
-/env-tiu.sh
+/env*.sh
 *.pyc
 *.zip
 *.log

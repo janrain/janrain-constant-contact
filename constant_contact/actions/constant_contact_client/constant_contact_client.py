@@ -24,9 +24,9 @@ class ConstantContactConfigurationError(ConstantContactError):
 	"""Invalid configuration"""
 	pass	
 
-class ConstantConctactServerError(ConstantContactError):
-    """Server error."""
-    pass
+class ConstantContactAttributeError(ConstantContactError):
+	"""Invalid configuration"""
+	pass
 
 class ConstantContactClient(object):
 	def __init__(self, api_key,access_token):
@@ -144,9 +144,11 @@ class ConstantContactClient(object):
 
 	def transform_string2(self,string):
 		if string == None:
-			return ''
+			return ''s
+		elif len(string) == 2:
+			return string
 		else:
-			return str(string)[:2]
+			return ''
 
 	def transform_string4(self,string):
 		if string == None:
@@ -178,8 +180,7 @@ class ConstantContactClient(object):
 							  'line3':self.transform_string50,
 							  'postal_code':self.transform_string25,
 							  'state_code':self.transform_string2,
-							  'sub_postal_code':self.transform_string25,
-			
+							  'sub_postal_code':self.transform_string25,			
 							  'address_type':self.transform_identity}
 		addresses = []
 		for address_dict in address_values:
@@ -240,6 +241,7 @@ class ConstantContactClient(object):
 					       ' may be referenced by \'.\' notation: ' +  cc_attribute, 0)
 			else:
 				contact[cc_attribute] = attribute_transformations[cc_attribute](contact_values[attribute])
+
 		addresses = []
 		if personal_address:
 			personal_address['address_type'] = 'PERSONAL'
@@ -258,11 +260,10 @@ class ConstantContactClient(object):
 		params = self.get_params()		
 		response = requests.get(baseurl+listspath+'/'+list_id,params=params,headers=self.get_header())
 		code = response.status_code
+		logger.info(response)
 		if code == 200:
-			logger.info(response)
 			return True
 		else:
-			logger.info(response)
 			return False
 
 
