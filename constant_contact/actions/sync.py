@@ -367,19 +367,19 @@ def process_queue(sync_info,config,logger):
             for m in messages:
                 if not clear_queue:
                     status = process_message(m,sync_info,config,logger) 
-                else:
-                    if status == 'RETRY_ERROR':
-                        if retry_errors_in_row >= max_retry_errors_in_row:
-                            logger.info("rate limit errors in a row exceeded, deleting all remaining records")
-                            clear_queue = True
-                        else:
-                            logger.info("rate limit retries exceeded")
-                            retry_errors_in_row += 1
-                    elif status == 'SUCCESS':
-                        logger.debug("")
-                        retry_errors_in_row = 0
+                if status == 'RETRY_ERROR':
+                    if retry_errors_in_row >= max_retry_errors_in_row:
+                        logger.info("rate limit errors in a row exceeded, deleting all remaining records")
+                        clear_queue = True
+                        status = 'CLEAR'
                     else:
-                        logger.info("unable to process message") 
+                        logger.info("rate limit retries exceeded")
+                        retry_errors_in_row += 1
+                elif status == 'SUCCESS':
+                    logger.debug("")
+                    retry_errors_in_row = 0
+                elif satus == 'ERROR':
+                    logger.info("unable to process message") 
                 m.delete()    
 
 def process_message(message,sync_info,config,logger):
