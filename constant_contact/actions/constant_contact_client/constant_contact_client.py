@@ -144,7 +144,7 @@ class ConstantContactClient(object):
 
 	def transform_string2(self,string):
 		if string == None:
-			return ''s
+			return ''
 		elif len(string) == 2:
 			return string
 		else:
