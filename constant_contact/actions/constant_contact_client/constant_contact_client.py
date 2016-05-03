@@ -256,7 +256,7 @@ class ConstantContactClient(object):
 		response = requests.get(baseurl+listspath+'/'+list_id,params=params,headers=self.get_header())
 		code = response.status_code
 		logger.info(response)
-		if code == 200:
+		if code == 200 or code == 403:
 			return True
 		else:
 			return False
