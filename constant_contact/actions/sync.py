@@ -378,7 +378,7 @@ def process_queue(sync_info,config,logger):
                 elif status == 'SUCCESS':
                     logger.debug("")
                     retry_errors_in_row = 0
-                elif satus == 'ERROR':
+                elif status == 'ERROR':
                     logger.info("unable to process message") 
                 m.delete()    
 
@@ -423,7 +423,7 @@ def process_message(message,sync_info,config,logger):
             logger.info("contact id already synced")
             return 'SUCCESS'
     except MaxRetriesError as e:
-        logger.info(log_tag + e.message)
+        logger.info(log_tag + ': Max retry errors detected')
         """retry""" 
         return 'RETRY_ERROR'
     except Exception as e:
