@@ -350,7 +350,6 @@ def process_queue(sync_info,config,logger):
     min_retries = get_int(config['APP_QUEUE_MIN_RETRIES'])
     max_retry_errors_in_row = get_int(config['APP_MAX_RETRY_ERRORS_IN_ROW'])
     retry_errors_in_row = 0
-    clear_queue = False
     status = 'INIT'
     while True:
         messages = sync_info['queue'].receive_messages(MaxNumberOfMessages=5)
@@ -365,13 +364,12 @@ def process_queue(sync_info,config,logger):
             retries = 0
             logger.info("returned: " + str(len(messages))+ " messages from queue")
             for m in messages:
-                if not clear_queue:
-                    status = process_message(m,sync_info,config,logger) 
+                status = process_message(m,sync_info,config,logger) 
                 if status == 'RETRY_ERROR':
                     if retry_errors_in_row >= max_retry_errors_in_row:
                         logger.info("rate limit errors in a row exceeded, deleting all remaining records")
-                        clear_queue = True
-                        status = 'CLEAR'
+                        sync_info['queue'].purge()
+                        return True
                     else:
                         logger.info("rate limit retries exceeded")
                         retry_errors_in_row += 1
