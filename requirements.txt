@@ -2,7 +2,7 @@
 boto3==1.2.2
 botocore==1.3.9
 docutils==0.12
-Flask==0.10.1
+Flask==2.3.2
 itsdangerous==0.24
 janrain-datalib==0.1.6
 janrain-python-api==0.3.6
